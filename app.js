@@ -1,18 +1,21 @@
-const { program } = require('commander');
-const { exit } = require('process');
 const express = require('express');
 const path = require('path');
 const fs = require('fs');
+const bodyParser = require('body-parser');
+const multer = require('multer');
+const { program } = require('commander');
+const { exit } = require('process');
 
+// Command-line options
 program
     .option('-h, --host <char>', 'server address')
     .option('-p, --port <int>', 'server port')
     .option('-c, --cache <char>', 'path to directory, where cache files will be stored');
 
 program.parse();
-
 const options = program.opts();
 
+// Validate required parameters
 if (!options.host) {
     console.error("Please enter host");
     exit(1);
@@ -28,105 +31,108 @@ if (!options.cache) {
 
 const app = express();
 
-// Для обробки JSON, текстових запитів
-app.use(express.json());
-app.use(express.text());
-app.use(express.urlencoded({ extended: true })); // Для обробки form-data
+// Setup middleware to handle different content types
+app.use(express.json()); // Handles application/json
+app.use(express.text()); // Handles text/plain
+app.use(multer().none()); // Handles form submissions without file uploads
 
-// Перевірка наявності каталогу для кешу
-const cacheDirectory = path.resolve(options.cache);
-if (!fs.existsSync(cacheDirectory)) {
-    fs.mkdirSync(cacheDirectory, { recursive: true });
-}
-
-app.get('/', function(req, res) {
+// Endpoint to serve home route
+app.get('/', (req, res) => {
     res.send('Hello World');
 });
 
+// Endpoint to get a specific note by name
 app.get('/notes/:name', (req, res) => {
     const noteName = req.params.name;
-    const notePath = path.join(cacheDirectory, `${noteName}.txt`);
+    const notePath = path.join(options.cache, `${noteName}.txt`);
 
     fs.readFile(notePath, 'utf8', (err, data) => {
         if (err) {
-            return res.status(404).send('Нотатка не знайдена');
+            return res.status(404).send('Note not found');
         }
         res.status(200).send(data);
     });
 });
 
+// PUT request to update a note
 app.put('/notes/:name', (req, res) => {
-    console.log(req.body); // Лог для перевірки даних
     const noteName = req.params.name;
-    const notePath = path.join(cacheDirectory, `${noteName}.txt`);
-    let noteContent = req.body;
+    const notePath = path.join(options.cache, `${noteName}.txt`);
 
-    // Переконатися, що вміст нотатки - це рядок
-    if (typeof noteContent !== 'string') {
-        noteContent = JSON.stringify(noteContent); // Якщо це об'єкт, перетворимо його на рядок
+    let noteContent;
+
+    if (req.is('application/json')) {
+        noteContent = req.body.note; // Extract note content from JSON
+    } else if (req.is('text/plain')) {
+        noteContent = req.body; // For plain text, it's the body itself
+    } else {
+        return res.status(400).send('Invalid content type');
     }
 
     if (!noteContent) {
-        return res.status(400).send('Вміст нотатки не може бути порожнім');
+        return res.status(400).send('The note content cannot be empty');
+    }
+
+    if (!fs.existsSync(notePath)) {
+        return res.status(404).send('Note not found');
     }
 
     fs.writeFile(notePath, noteContent, 'utf8', (err) => {
         if (err) {
-            return res.status(500).json({ message: 'Помилка сервера', error: err });
+            return res.status(500).json({ message: 'Server error', error: err });
         }
-        res.status(200).send('Нотатка успішно оновлена');
+
+        res.status(200).send('Note successfully updated');
     });
 });
+
+// Endpoint to delete a specific note
 app.delete('/notes/:name', (req, res) => {
     const noteName = req.params.name;
-    const notePath = path.join(cacheDirectory, `${noteName}.txt`);
+    const notePath = path.join(options.cache, `${noteName}.txt`);
 
     fs.unlink(notePath, (err) => {
         if (err) {
             if (err.code === 'ENOENT') {
-                return res.status(404).send('Нотатку не знайдено');
+                return res.status(404).send('Note not found');
             } else {
-                return res.status(500).json({ message: 'Помилка сервера', error: err });
+                return res.status(500).json({ message: 'Server error', error: err });
             }
         }
-        res.status(200).send('Нотатку успішно видалено');
+        res.status(200).send('Note successfully deleted');
     });
 });
 
+// Endpoint to create a new note
 app.post('/write', (req, res) => {
     const noteName = req.body.note_name;
-    let noteContent = req.body.note;
+    const noteContent = req.body.note;
 
-    // Переконатися, що вміст нотатки - це рядок
-    if (typeof noteContent !== 'string') {
-        noteContent = JSON.stringify(noteContent); // Якщо це об'єкт, перетворимо його на рядок
+    if (!noteName || !noteContent) {
+        return res.status(400).send('Note name or content is missing');
     }
 
-    if (!noteContent) {
-        return res.status(400).send('Вміст нотатки не може бути порожнім');
-    }
-
-    const notePath = path.join(cacheDirectory, `${noteName}.txt`);
+    const notePath = path.join(options.cache, `${noteName}.txt`);
 
     if (fs.existsSync(notePath)) {
-        return res.status(400).send('Нотатка з такою назвою вже існує');
+        return res.status(400).send('Note with this name already exists');
     } else {
         fs.writeFile(notePath, noteContent, 'utf-8', (err) => {
             if (err) {
-                return res.status(500).json({ message: 'Помилка сервера', error: err });
+                return res.status(500).json({ message: 'Server error', error: err });
             }
-            res.status(201).send('Нотатка успішно створена');
+            res.status(201).send('Note successfully created');
         });
     }
 });
 
+// Endpoint to get the list of all notes
 app.get('/notes', (req, res) => {
-    const notesInCache = fs.readdirSync(cacheDirectory);
-    console.log(notesInCache);
+    const notesInCache = fs.readdirSync(options.cache);
 
     const notes = notesInCache.map((note) => {
         const noteName = path.basename(note, '.txt');
-        const notePath = path.join(cacheDirectory, note);
+        const notePath = path.join(options.cache, note);
         const noteText = fs.readFileSync(notePath, 'utf8');
         return {
             name: noteName,
@@ -136,12 +142,13 @@ app.get('/notes', (req, res) => {
     res.status(200).json(notes);
 });
 
+// Endpoint to serve the HTML upload form (if needed)
 app.get('/UploadForm.html', (req, res) => {
-    const htmlPage = fs.readFileSync('./UploadForm.html');
-    res.writeHead(200, { 'Content-Type': 'text/html' });
-    res.end(htmlPage);
+    const htmlPage = path.join(__dirname, 'UploadForm.html');
+    res.sendFile(htmlPage);
 });
 
+// Start the server
 app.listen(options.port, options.host, () => {
     console.log(`Server is working on http://${options.host}:${options.port}`);
 });
